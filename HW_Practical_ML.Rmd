@@ -1,0 +1,166 @@
+---
+title: "Practical Machine Learning Project"
+author: "author:Mikhail SH"
+date: "date:21.03.2015"
+output:
+  html_document:
+    keep_md: yes
+---
+
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Data
+
+The training data for this project are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
+
+The test data are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har]. 
+
+### Goal
+
+The goal is to find a model that can predicht the classes below based on the sensor data of an activity. (A,B,C,D,E)
+
+## Loading data
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+setwd("D:/!Courseria/2015_03 Practical Machine Learning/HW")
+load(file="rfFit_frFit20.RData")
+library("dplyr")
+library("tidyr")
+```
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+set.seed(123)
+library(caret);
+dataset_test <- read.table("pml-testing.csv", header = TRUE, sep = ",", quote = "\"",
+                           dec = ".", fill = TRUE)
+
+dataset_train <- read.table("pml-training.csv", header = TRUE, sep = ",", quote = "\"",
+                            dec = ".", fill = TRUE)
+```
+
+## Creating training and testset for cross validation
+
+To be able to validate the model the provided trainingset will be split in a training and testset for the modelling.
+
+```{r}
+inTrain <- createDataPartition(y=dataset_train$classe,
+                               p=0.75, list=FALSE)
+set.seed(123)
+training <- dataset_train[inTrain,]
+testing <-  dataset_train[-inTrain,]
+```
+
+
+## Cleaning data
+
+The data needs to be cleaned before it can be used for modelling. 
+
+1. Remove some zero variance predictors.
+2. Remove the first columns (id, timestamps, subject name) because they are not usefull in predicting.
+3. Remove any column that has 'NA' greater than 15% of the column length.
+4. Remove column with Hight Correlation
+
+```{r}
+training_step1 <- training[, -nearZeroVar(training)]
+
+myvars <- names(training_step1) %in% c("classe", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "num_window")
+training_step2  <- training_step1[!myvars]
+
+training_step3 = training_step2[, colMeans(is.na(training_step2)) <= .15]
+
+training_step4 <- training_step3[, -findCorrelation(cor(training_step3), .95)]
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+training_step4.1 = training_step1[c("X","classe")]
+training_end = merge(training_step4,training_step4.1,by="X")
+```
+## Cross validation
+
+The default resampling scheme for the caret train function is bootstrap. I have used custom settings instead by setting the below `trainControl`.
+
+The out of sample error should be higher than the in sample error because the the model is based on the training set and will therefor most likely have a slightly worst performance on the testset. This will be shown further in the project.
+
+## Selecting variables
+
+First I made a model on a training set. Then I selected the 20 most important variables with `varImp` and run the model again. I repeated this, meanwhile balancing the accurancy and number of variables. 
+
+# Random forest model 
+rfFit <- train(classe ~ .,method="rf", data=training_end[,c(-1)])
+
+```{r}
+rfFit
+```
+```{r}
+#rfFit$finalModel
+```
+
+# Confusion matrix for Random forest ( include all variables ) 
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+confusionMatrix(testing$classe,predict(rfFit,testing))
+```
+ **OOB estimate of  error rate: 0.67%**
+
+# Selecting top 20 variables 
+```{r}
+vI <- varImp(rfFit$finalModel)
+vI$sample <- row.names(vI); vI <- vI[order(vI$Overall, decreasing = T),]
+PredictorVariables <- vI$sample[1:20]
+PredictorVariables
+
+Formula <- formula(paste("classe ~ ",
+                         paste(PredictorVariables, collapse=" + ")))
+```
+
+```{r , eval=FALSE}
+rfFit_top20 <- train(Formula,method="rf", data=training_end[,c(-1)])
+```
+
+```{r}
+rfFit_top20
+rfFit_top20$finalModel
+confusionMatrix(testing$classe,predict(rfFit_top20,testing))
+```
+**OOB estimate of  error rate: 0.91%**
+
+#The confusion matrix of the test set is illustrated on Figure 
+```{r}
+conf_rf <- as.data.frame(confusionMatrix(testing$classe,predict(rfFit_top20,testing))[2])
+conf_rf <- conf_rf %>% rename(prediction = table.Prediction, reference = table.Reference, count = table.Freq) %>% 
+        arrange(desc(prediction)) %>% group_by(prediction) %>% mutate(prob = count/sum(count)) %>% ungroup
+ggplot(conf_rf, aes(reference, prediction)) + 
+        geom_tile(aes(fill = prob), colour = "white") + 
+        geom_text(aes(fill = prob, label = round(prob, 2)), size=3, colour="grey25") +
+        scale_fill_gradient(low = "white", high = "red") +
+        scale_x_discrete(expand = c(0, 0)) +
+        scale_y_discrete(expand = c(0, 0), limits = c("E","D","C","B","A")) 
+```
+
+## Prediction using Random forest model
+The random forest model with top 20 variables is used to predict. 
+
+Below the submission files are generated
+```{r}
+pml_write_files = function(x){
+        n = length(x)
+        for(i in 1:n){
+                filename = paste0("problem_id_",i,".txt")
+                write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+        }
+}
+
+final_predictions <- predict(rfFit_top20, dataset_test)
+final_predictions
+```
+```{r, eval=FALSE}
+pml_write_files(final_predictions)
+```
+
+```{r, include=FALSE}
+   # add this chunk to end of mycode.rmd
+   file.rename(from="HW_Practical_ML.md", 
+               to="README.md")
+```
